@@ -1,3 +1,4 @@
+pub mod fri_benchmark;
 pub mod fri_commitment;
 pub mod fri_decommit;
 mod fri_functions;
@@ -19,10 +20,15 @@ use self::fri_commitment::FriLayer;
 use self::fri_decommit::FriDecommitment;
 use self::fri_functions::fold_polynomial;
 
-pub fn commit_phase<F: IsFFTField + IsSubFieldOf<E>, E: IsField>(
+use rand::Rng;
+use rand_chacha::ChaCha8Rng;
+use rand_chacha::rand_core::SeedableRng;
+
+/// A copy-paste of commit_phase(), without the transcript
+pub fn commit_phase_for_benchmark<F: IsFFTField + IsSubFieldOf<E>, E: IsField>(
     number_layers: usize,
     p_0: Polynomial<FieldElement<E>>,
-    transcript: &mut impl IsTranscript<E>,
+    mut rng: ChaCha8Rng,
     coset_offset: &FieldElement<F>,
     domain_size: usize,
 ) -> (
@@ -43,22 +49,90 @@ where
 
     for _ in 1..number_layers {
         // <<<< Receive challenge 𝜁ₖ₋₁
-        let zeta = transcript.sample_field_element();
+
+        let mut rand_bytes: Vec::<u8> = Vec::with_capacity(8);
+        for _ in 0..8 {
+            rand_bytes.push(rng.gen());
+        }
+
+        let zeta = FieldElement::from(rng.gen::<u64>());
         coset_offset = coset_offset.square();
         domain_size /= 2;
 
         // Compute layer polynomial and domain
         current_poly = FieldElement::<F>::from(2) * fold_polynomial(&current_poly, &zeta);
         current_layer = new_fri_layer(&current_poly, &coset_offset, domain_size);
-        let new_data = &current_layer.merkle_tree.root;
         fri_layer_list.push(current_layer.clone()); // TODO: remove this clone
-
-        // >>>> Send commitment: [pₖ]
-        transcript.append_bytes(new_data);
     }
 
     // <<<< Receive challenge: 𝜁ₙ₋₁
-    let zeta = transcript.sample_field_element();
+    let zeta = FieldElement::from(rng.gen::<u64>());
+
+    let last_poly = FieldElement::<F>::from(2) * fold_polynomial(&current_poly, &zeta);
+
+    let last_value = last_poly
+        .coefficients()
+        .first()
+        .unwrap_or(&FieldElement::zero())
+        .clone();
+
+    (last_value, fri_layer_list)
+}
+
+pub fn commit_phase<F: IsFFTField + IsSubFieldOf<E>, E: IsField>(
+    number_layers: usize,
+    p_0: Polynomial<FieldElement<E>>,
+    _transcript: &mut impl IsTranscript<E>,
+    coset_offset: &FieldElement<F>,
+    domain_size: usize,
+) -> (
+    FieldElement<E>,
+    Vec<FriLayer<E, BatchedMerkleTreeBackend<E>>>,
+)
+where
+    FieldElement<F>: AsBytes + Sync + Send,
+    FieldElement<E>: AsBytes + Sync + Send,
+{
+    let mut domain_size = domain_size;
+
+    let mut fri_layer_list = Vec::with_capacity(number_layers);
+    let mut current_layer: FriLayer<E, BatchedMerkleTreeBackend<E>>;
+    let mut current_poly = p_0;
+
+    let mut coset_offset = coset_offset.clone();
+
+    let mut rng = ChaCha8Rng::seed_from_u64(0);
+
+    for _ in 1..number_layers {
+        // <<<< Receive challenge 𝜁ₖ₋₁
+
+        let mut rand_bytes: Vec::<u8> = Vec::with_capacity(8);
+        for _ in 0..8 {
+            rand_bytes.push(rng.gen());
+        }
+
+        let zeta = FieldElement::from(1u64);
+        coset_offset = coset_offset.square();
+        domain_size /= 2;
+
+        // Compute layer polynomial and domain
+        current_poly = FieldElement::<F>::from(2) * fold_polynomial(&current_poly, &zeta);
+        current_layer = new_fri_layer(&current_poly, &coset_offset, domain_size);
+        //let new_data = &current_layer.merkle_tree.root;
+        fri_layer_list.push(current_layer.clone()); // TODO: remove this clone
+
+        // >>>> Send commitment: [pₖ]
+        //transcript.append_bytes(new_data);
+    }
+
+    // <<<< Receive challenge: 𝜁ₙ₋₁
+    //let zeta = transcript.sample_field_element();
+    let mut rand_bytes: Vec::<u8> = Vec::with_capacity(8);
+    for _ in 0..8 {
+        rand_bytes.push(rng.gen());
+    }
+    //let zeta = FieldElement::from_bytes_le(&rand_bytes).unwrap();
+    let zeta = FieldElement::from(1u64);
 
     let last_poly = FieldElement::<F>::from(2) * fold_polynomial(&current_poly, &zeta);
 
@@ -69,7 +143,7 @@ where
         .clone();
 
     // >>>> Send value: pₙ
-    transcript.append_field_element(&last_value);
+    //transcript.append_field_element(&last_value);
 
     (last_value, fri_layer_list)
 }
